@@ -1,0 +1,191 @@
+<!--
+Versão 2.1: Envio direto para Google Sheets via API oficial (OAuth2) com seleção de aba (sheet) de destino.
+
+⚙️ Requisitos:
+1) Crie um projeto no Google Cloud Console.
+   - Ative a API Google Sheets.
+   - Crie credenciais OAuth2 (Client ID Web Application).
+   - Adicione o domínio em "Authorized JavaScript origins".
+2) Copie o `client_id` e substitua no código.
+3) Substitua `SHEET_ID` pelo ID da planilha.
+-->
+
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OCR para Planilha (OAuth2)</title>
+  <style>
+    body{font-family:system-ui,Segoe UI,Roboto,Arial;margin:16px}
+    .controls{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+    textarea{width:100%;height:150px}
+    img{max-width:100%;height:auto;border:1px solid #ddd;padding:4px}
+    button,select{padding:8px 12px;border-radius:6px}
+  </style>
+  <script src="https://apis.google.com/js/api.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4.1.3/dist/tesseract.min.js"></script>
+</head>
+<body>
+  <h1>Captura OCR → Google Sheets (OAuth2)</h1>
+  <p>Capture texto via câmera e envie direto para uma aba escolhida da sua planilha.</p>
+
+  <div class="controls">
+    <input id="imageInput" type="file" accept="image/*" capture="environment" />
+    <button id="readBtn">Ler texto</button>
+    <button id="authBtn">Conectar Google</button>
+    <select id="sheetSelect" disabled>
+      <option value="">Selecione uma aba...</option>
+    </select>
+    <button id="sendBtn" disabled>Enviar para planilha</button>
+  </div>
+
+  <div>
+    <strong>Preview da imagem:</strong>
+    <div><img id="preview" alt="preview" /></div>
+  </div>
+
+  <div>
+    <strong>Resultado OCR:</strong>
+    <textarea id="ocrResult" placeholder="Texto reconhecido aparecerá aqui..."></textarea>
+  </div>
+
+  <script>
+    const CLIENT_ID = '203001910885-7flup6uuda32jrncrf590h0db8h3et2o.apps.googleusercontent.com';
+    const API_KEY = '';
+    const SHEET_ID = '1x7_nxMiCZQwnSycVnZ7MkU0zF-h7r_UBMuNSqx3bIg4';
+    const SCOPES = 'https://www.googleapis.com/auth/spreadsheets';
+
+    const imageInput = document.getElementById('imageInput');
+    const preview = document.getElementById('preview');
+    const readBtn = document.getElementById('readBtn');
+    const sendBtn = document.getElementById('sendBtn');
+    const ocrResult = document.getElementById('ocrResult');
+    const authBtn = document.getElementById('authBtn');
+    const sheetSelect = document.getElementById('sheetSelect');
+
+    let lastImageDataUrl = null;
+    let tokenClient;
+    let gapiInited = false;
+    let gisInited = false;
+
+    function gapiLoaded() {
+      gapi.load('client', initializeGapiClient);
+    }
+
+    async function initializeGapiClient() {
+      await gapi.client.init({ apiKey: API_KEY, discoveryDocs: ['https://sheets.googleapis.com/$discovery/rest?version=v4'] });
+      gapiInited = true;
+      maybeEnableButtons();
+    }
+
+    function gisLoaded() {
+      tokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: CLIENT_ID,
+        scope: SCOPES,
+        callback: '',
+      });
+      gisInited = true;
+      maybeEnableButtons();
+    }
+
+    function maybeEnableButtons() {
+      if (gapiInited && gisInited) {
+        authBtn.disabled = false;
+      }
+    }
+
+    authBtn.onclick = () => {
+      tokenClient.callback = async (resp) => {
+        if (resp.error !== undefined) throw resp;
+        alert('Autenticação concluída! Carregando abas da planilha...');
+        await carregarAbas();
+        sendBtn.disabled = false;
+      };
+      tokenClient.requestAccessToken({ prompt: 'consent' });
+    };
+
+    async function carregarAbas() {
+      try {
+        const res = await gapi.client.sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
+        const sheets = res.result.sheets.map(s => s.properties.title);
+        sheetSelect.innerHTML = '<option value="">Selecione uma aba...</option>' + sheets.map(t => `<option value="${t}">${t}</option>`).join('');
+        sheetSelect.disabled = false;
+      } catch (err) {
+        alert('Erro ao carregar abas: ' + err.message);
+      }
+    }
+
+    window.onload = () => {
+      const s1 = document.createElement('script');
+      s1.src = 'https://accounts.google.com/gsi/client';
+      s1.onload = gisLoaded;
+      document.body.appendChild(s1);
+      gapiLoaded();
+    };
+
+    // OCR
+    imageInput.addEventListener('change', (ev) => {
+      const file = ev.target.files && ev.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        preview.src = reader.result;
+        lastImageDataUrl = reader.result;
+      };
+      reader.readAsDataURL(file);
+    });
+
+    readBtn.addEventListener('click', async () => {
+      if (!lastImageDataUrl) {
+        alert('Escolha uma imagem primeiro.');
+        return;
+      }
+      readBtn.disabled = true;
+      readBtn.textContent = 'Lendo...';
+      ocrResult.value = '';
+      try {
+        const worker = Tesseract.createWorker({ logger: m => console.log(m) });
+        await worker.load();
+        await worker.loadLanguage('por+eng');
+        await worker.initialize('por+eng');
+        const res = await worker.recognize(lastImageDataUrl);
+        ocrResult.value = res.data.text;
+        await worker.terminate();
+        sendBtn.disabled = false;
+      } catch (err) {
+        alert('Erro no OCR: ' + err.message);
+      } finally {
+        readBtn.disabled = false;
+        readBtn.textContent = 'Ler texto';
+      }
+    });
+
+    // Envio para planilha
+    sendBtn.addEventListener('click', async () => {
+      const text = ocrResult.value.trim();
+      const aba = sheetSelect.value;
+      if (!text) return alert('Nada para enviar.');
+      if (!aba) return alert('Escolha uma aba de destino.');
+      sendBtn.disabled = true;
+      sendBtn.textContent = 'Enviando...';
+      try {
+        const now = new Date().toLocaleString();
+        const body = { values: [[now, text]] };
+        await gapi.client.sheets.spreadsheets.values.append({
+          spreadsheetId: SHEET_ID,
+          range: `${aba}!A:B`,
+          valueInputOption: 'RAW',
+          resource: body,
+        });
+        alert(`Texto enviado com sucesso para a aba "${aba}"!`);
+      } catch (err) {
+        alert('Erro ao enviar: ' + err.message);
+      } finally {
+        sendBtn.disabled = false;
+        sendBtn.textContent = 'Enviar para planilha';
+      }
+    });
+  </script>
+</body>
+</html>
